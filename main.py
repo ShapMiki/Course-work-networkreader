@@ -1,242 +1,363 @@
 import sys
-import os
-import psutil
-import time
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QComboBox, QLabel, QTabWidget, QProgressBar, QLineEdit, QMessageBox, QFrame
-)
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer
-from scapy.all import sniff, IP, TCP, UDP, ICMP
+import requests
+from PyQt6.QtWidgets import *
+from PyQt6.QtCore import *
+from PyQt6.QtGui import *
 
-# --- Тот же стильный QSS ---
+# Обновленный стиль с нормальными заголовками
 STYLE_SHEET = """
 QMainWindow { background-color: #0f172a; }
-QTabWidget::pane { border: 1px solid #1e293b; background: #0f172a; border-radius: 10px; }
-QTabBar::tab { background: #1e293b; color: #94a3b8; padding: 10px 20px; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 2px; }
-QTabBar::tab:selected { background: #3b82f6; color: white; font-weight: bold; }
-#StatCard { background-color: #1e293b; border-radius: 12px; border: 1px solid #334155; }
+
+/* Вкладки */
+QTabWidget::pane { border: 1px solid #1e293b; background: #0f172a; border-radius: 12px; margin-top: -5px; }
+QTabBar::tab { 
+    background: #1e293b; color: #94a3b8; padding: 14px 40px; 
+    border-top-left-radius: 12px; border-top-right-radius: 12px; 
+    margin-right: 4px; font-weight: 600; font-size: 13px;
+}
+QTabBar::tab:selected { background: #3b82f6; color: white; }
+QTabBar::tab:hover:!selected { background: #334155; }
+
+/* Панель подключения */
+#ConnPanel { background-color: #1e293b; border-bottom: 1px solid #334155; padding: 15px 25px; }
+
+/* Карточки дашборда */
+#StatCard { 
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1e293b, stop:1 #0f172a);
+    border-radius: 16px; border: 1px solid #334155; padding: 25px; 
+}
+#StatCard:hover { border: 1px solid #3b82f6; }
+
+/* Тексты и ГЛАВНЫЕ ЗАГОЛОВКИ (теперь красивые) */
 QLabel { color: #f8fafc; font-family: 'Segoe UI', sans-serif; }
-#Header { font-size: 18px; font-weight: bold; color: #3b82f6; }
-QTableWidget { background-color: #0f172a; alternate-background-color: #1e293b; gridline-color: #334155; color: #e2e8f0; border: none; selection-background-color: #3b82f6; }
-QHeaderView::section { background-color: #1e293b; color: #94a3b8; padding: 8px; border: none; font-weight: bold; }
-QLineEdit { background-color: #1e293b; border: 1px solid #334155; border-radius: 6px; padding: 8px; color: white; }
-QPushButton { background-color: #3b82f6; color: white; border-radius: 6px; padding: 8px 15px; font-weight: bold; }
+
+#Header { 
+    font-size: 15px; 
+    text-transform: uppercase; 
+    letter-spacing: 1.2px; 
+    color: #60a5fa; 
+    font-weight: 800; 
+}
+
+#ValueLarge { font-size: 36px; font-weight: 800; color: #ffffff; }
+#SpeedValue { font-size: 18px; color: #38bdf8; font-weight: 600; }
+
+/* Инпуты и кнопки управления */
+QLineEdit { 
+    background-color: #0f172a; border: 1px solid #334155; border-radius: 8px; 
+    padding: 10px 15px; color: white; selection-background-color: #3b82f6;
+}
+#SearchInput { 
+    background-color: #1e293b; border: 1px solid #334155; border-radius: 10px; 
+    padding: 10px 20px; color: white; font-size: 14px; min-width: 400px;
+}
+QPushButton { 
+    background-color: #3b82f6; color: white; border-radius: 8px; 
+    padding: 12px 28px; font-weight: 700; font-size: 13px; 
+}
 QPushButton:hover { background-color: #2563eb; }
-QPushButton#StopBtn { background-color: #ef4444; }
-QProgressBar { background-color: #334155; border-radius: 5px; text-align: center; color: white; }
-QProgressBar::chunk { background-color: #3b82f6; border-radius: 5px; }
+#ControlBtn { 
+    background-color: #334155; color: white; border-radius: 8px; padding: 10px 20px; 
+    font-weight: bold; font-size: 12px;
+}
+#ControlBtn:checked { background-color: #ef4444; }
+
+/* Прогресс-бары */
+QProgressBar { 
+    background-color: #334155; border-radius: 6px; text-align: center; 
+    color: transparent; height: 10px; border: none; margin-top: 15px;
+}
+QProgressBar::chunk { background-color: #3b82f6; border-radius: 6px; }
+
+/* Таблицы и их заголовки */
+QTableWidget { 
+    background-color: #0f172a; color: #e2e8f0; gridline-color: #1e293b; 
+    border: none; font-size: 14px; outline: none;
+}
+QHeaderView::section { 
+    background-color: #1e293b; 
+    color: #e2e8f0; 
+    padding: 15px; 
+    border: none; 
+    font-weight: 700; 
+    font-size: 12px; 
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
 """
 
 
-def check_root():
-    return os.getuid() == 0
-
-
-class SnifferThread(QThread):
-    packet_signal = pyqtSignal(list)
+class DataFetcher(QThread):
+    stats_signal = pyqtSignal(dict)
+    packets_signal = pyqtSignal(list)
+    conns_signal = pyqtSignal(list)
+    error_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
-        self.running = False
+        self.server_url = ""
+        self.active = False
+
+    def set_url(self, url):
+        self.server_url = url.strip().rstrip('/')
 
     def run(self):
-        self.running = True
+        while True:
+            if not self.active or not self.server_url:
+                self.msleep(500)
+                continue
+            try:
+                s = requests.get(f"{self.server_url}/stats", timeout=1).json()
+                self.stats_signal.emit(s)
+                p = requests.get(f"{self.server_url}/packets", timeout=1).json()
+                if p: self.packets_signal.emit(p)
+                c = requests.get(f"{self.server_url}/connections", timeout=1).json()
+                if c: self.conns_signal.emit(c)
+                self.error_signal.emit("OK")
+            except Exception:
+                self.error_signal.emit("ERR")
+            self.msleep(1000)
 
-        def packet_callback(pkt):
-            if not self.running: return True
-            if IP in pkt:
-                proto = "TCP" if TCP in pkt else "UDP" if UDP in pkt else "ICMP" if ICMP in pkt else "Other"
-                self.packet_signal.emit([pkt[IP].src, pkt[IP].dst, proto, f"{len(pkt)} B", time.strftime('%H:%M:%S')])
 
-        sniff(prn=packet_callback, store=0, stop_filter=lambda x: not self.running)
-
-    def stop(self):
-        self.running = False
-
-
-class CyberGuard(QMainWindow):
+class CyberGuardClient(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CYBERGUARD PRO | Network Monitor")
-        self.resize(1150, 850)
+        self.setWindowTitle("CYBERGUARD | Remote Monitoring System")
+        self.resize(1200, 900)
         self.setStyleSheet(STYLE_SHEET)
 
+        self.traffic_paused = False
+
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        self.main_layout = QVBoxLayout(main_widget)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+
+        self.init_conn_panel()
         self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        self.main_layout.addWidget(self.tabs)
 
         self.init_dashboard()
-        self.init_sniffer()
-        self.init_connections()
+        self.init_traffic_tab()
+        self.init_conn_tab()
 
-        # Единый таймер обновления (CPU, RAM, Сеть, Соединения)
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_all_metrics)
-        self.timer.start(1000)
+        self.fetcher = DataFetcher()
+        self.fetcher.stats_signal.connect(self.update_stats)
+        self.fetcher.packets_signal.connect(self.update_packets)
+        self.fetcher.conns_signal.connect(self.update_conns)
+        self.fetcher.error_signal.connect(self.update_status)
+        self.fetcher.start()
 
-        # АВТОСТАРТ СНИФФЕРА ПРИ ВХОДЕ
-        self.start_auto_sniffing()
+    def init_conn_panel(self):
+        panel = QFrame()
+        panel.setObjectName("ConnPanel")
+        layout = QHBoxLayout(panel)
 
-    def start_auto_sniffing(self):
-        self.sniffer.start()
-        self.btn_action.setText("ОСТАНОВИТЬ МОНИТОРИНГ")
-        self.btn_action.setObjectName("StopBtn")
-        self.btn_action.setStyle(self.btn_action.style())
+        layout.addWidget(QLabel("TARGET HOST:"))
+        self.url_input = QLineEdit()
+        self.url_input.setText("http://127.0.0.1:8000")
+        layout.addWidget(self.url_input)
 
-    def create_card(self, title):
+        self.btn = QPushButton("ESTABLISH CONNECTION")
+        self.btn.clicked.connect(self.handle_connect)
+        layout.addWidget(self.btn)
+
+        layout.addStretch()
+        self.status_dot = QLabel("● DISCONNECTED")
+        layout.addWidget(self.status_dot)
+        self.main_layout.addWidget(panel)
+
+    def handle_connect(self):
+        url = self.url_input.text().strip()
+        if url:
+            self.fetcher.set_url(url)
+            self.fetcher.active = True
+            self.status_dot.setText("● CONNECTING...")
+            self.status_dot.setStyleSheet("color: #fbbf24;")
+
+    def create_card(self, title, icon=""):
         card = QFrame()
         card.setObjectName("StatCard")
         layout = QVBoxLayout(card)
-        label = QLabel(title)
-        label.setObjectName("Header")
-        layout.addWidget(label)
+        lbl = QLabel(f"{icon} {title}")
+        lbl.setObjectName("Header")
+        layout.addWidget(lbl)
         return card, layout
 
     def init_dashboard(self):
         tab = QWidget()
-        main_layout = QVBoxLayout(tab)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(35, 35, 35, 35)
+        layout.setSpacing(30)
 
-        stats_row = QHBoxLayout()
-        cpu_card, cpu_layout = self.create_card("ЦЕНТРАЛЬНЫЙ ПРОЦЕССОР")
-        self.cpu_bar = QProgressBar()
-        self.cpu_label = QLabel("Загрузка: 0%")
-        cpu_layout.addWidget(self.cpu_label);
-        cpu_layout.addWidget(self.cpu_bar)
+        row1 = QHBoxLayout()
+        row1.setSpacing(25)
 
-        ram_card, ram_layout = self.create_card("ОПЕРАТИВНАЯ ПАМЯТЬ")
-        self.ram_bar = QProgressBar()
-        self.ram_label = QLabel("Использование: 0%")
-        ram_layout.addWidget(self.ram_label);
-        ram_layout.addWidget(self.ram_bar)
+        metrics = [("CPU Load", "⚡", "cpu"), ("Memory", "🧠", "ram"), ("Disk", "💾", "disk")]
+        for title, icon, attr in metrics:
+            card, clat = self.create_card(title, icon)
+            val = QLabel("0%")
+            val.setObjectName("ValueLarge")
+            bar = QProgressBar()
+            setattr(self, f"{attr}_bar", bar)
+            setattr(self, f"{attr}_val", val)
+            clat.addWidget(val)
+            clat.addWidget(bar)
+            row1.addWidget(card)
+        layout.addLayout(row1)
 
-        stats_row.addWidget(cpu_card);
-        stats_row.addWidget(ram_card)
-        main_layout.addLayout(stats_row)
+        net_card, net_lay = self.create_card("Network Live Throughput", "🌐")
+        net_info = QHBoxLayout()
 
-        net_card, net_layout = self.create_card("СЕТЕВОЙ ТРАФИК (ВСЕГО)")
-        self.net_stats = QLabel("📥 Получено: 0 MB\n📤 Отправлено: 0 MB")
-        self.net_stats.setStyleSheet("font-size: 22px; color: #10b981; font-weight: bold;")
-        net_layout.addWidget(self.net_stats)
-        main_layout.addWidget(net_card)
+        for label, obj_name in [("DOWNLOAD", "sp_down"), ("UPLOAD", "sp_up")]:
+            v = QVBoxLayout()
+            l = QLabel(label);
+            l.setObjectName("Header")
+            val = QLabel("0 KB/s")
+            val.setObjectName("SpeedValue")
+            setattr(self, obj_name, val)
+            v.addWidget(l);
+            v.addWidget(val)
+            net_info.addLayout(v)
+            net_info.addSpacing(50)
 
-        main_layout.addStretch()
-        self.tabs.addTab(tab, "📊 ДАШБОРД")
+        net_info.addStretch()
+        v_total = QVBoxLayout()
+        tl = QLabel("TOTAL DATA (RX/TX)");
+        tl.setObjectName("Header")
+        self.total_net = QLabel("0 MB / 0 MB")
+        self.total_net.setObjectName("ValueLarge")
+        v_total.addWidget(tl, alignment=Qt.AlignmentFlag.AlignRight)
+        v_total.addWidget(self.total_net, alignment=Qt.AlignmentFlag.AlignRight)
+        net_info.addLayout(v_total)
 
-    def init_sniffer(self):
+        net_lay.addLayout(net_info)
+        layout.addWidget(net_card)
+
+        sys_card, sys_lay = self.create_card("Server Environment", "🛠")
+        self.sys_info = QLabel("Connecting to host...")
+        self.sys_info.setStyleSheet("font-size: 15px; color: #94a3b8; font-weight: 500;")
+        sys_lay.addWidget(self.sys_info)
+        layout.addWidget(sys_card)
+
+        self.tabs.addTab(tab, "📊 DASHBOARD")
+
+    def _setup_table(self, table):
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(52)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setStyleSheet("QTableWidget { alternate-background-color: #161e2d; }")
+
+    def init_traffic_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        layout.setContentsMargins(25, 25, 25, 25)
 
         tools = QHBoxLayout()
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Поиск по IP...")
-        self.search.textChanged.connect(self.filter_data)
-        self.btn_action = QPushButton("ЗАПУСТИТЬ")
-        self.btn_action.clicked.connect(self.toggle_sniffer)
+        self.traffic_search = QLineEdit()
+        self.traffic_search.setObjectName("SearchInput")
+        self.traffic_search.setPlaceholderText("🔍 Search by IP, Protocol or Size...")
+        self.traffic_search.textChanged.connect(self.filter_traffic)
 
-        tools.addWidget(self.search);
-        tools.addWidget(self.btn_action)
+        self.pause_btn = QPushButton("⏸ PAUSE STREAM")
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.setObjectName("ControlBtn")
+        self.pause_btn.clicked.connect(self.toggle_pause)
+
+        tools.addWidget(self.traffic_search)
+        tools.addStretch()
+        tools.addWidget(self.pause_btn)
         layout.addLayout(tools)
 
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["ИСТОЧНИК", "НАЗНАЧЕНИЕ", "ПРОТОКОЛ", "РАЗМЕР", "ВРЕМЯ"])
+        self.table.setHorizontalHeaderLabels(["SOURCE", "DESTINATION", "PROTO", "SIZE", "TIMESTAMP"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setAlternatingRowColors(True)
+        self._setup_table(self.table)
+
         layout.addWidget(self.table)
+        self.tabs.addTab(tab, "📡 NETWORK TRAFFIC")
 
-        self.tabs.addTab(tab, "📡 ТРАФИК")
-        self.sniffer = SnifferThread()
-        self.sniffer.packet_signal.connect(self.add_row)
-
-    def init_connections(self):
+    def init_conn_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         self.conn_table = QTableWidget(0, 4)
-        self.conn_table.setHorizontalHeaderLabels(["ЛОКАЛЬНЫЙ", "УДАЛЕННЫЙ", "СТАТУС", "PID"])
+        self.conn_table.setHorizontalHeaderLabels(["LOCAL", "REMOTE", "STATUS", "PID"])
         self.conn_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._setup_table(self.conn_table)
 
-        info_label = QLabel("Обновляется автоматически каждую секунду")
-        info_label.setStyleSheet("color: #64748b; font-style: italic;")
-
-        layout.addWidget(info_label)
         layout.addWidget(self.conn_table)
-        self.tabs.addTab(tab, "🔗 СОЕДИНЕНИЯ")
+        self.tabs.addTab(tab, "🔗 CONNECTIONS")
 
-    def update_all_metrics(self):
-        # 1. CPU & RAM
-        cpu = psutil.cpu_percent()
-        ram = psutil.virtual_memory().percent
-        self.cpu_bar.setValue(int(cpu))
-        self.cpu_label.setText(f"Загрузка CPU: {cpu}%")
-        self.ram_bar.setValue(int(ram))
-        self.ram_label.setText(f"Использование RAM: {ram}%")
+    def toggle_pause(self):
+        self.traffic_paused = self.pause_btn.isChecked()
+        self.pause_btn.setText("▶ RESUME STREAM" if self.traffic_paused else "⏸ PAUSE STREAM")
 
-        # 2. Сетевые счетчики
-        net = psutil.net_io_counters()
-        self.net_stats.setText(
-            f"📥 Получено: {net.bytes_recv / 1024 / 1024:.2f} MB | 📤 Отправлено: {net.bytes_sent / 1024 / 1024:.2f} MB")
+    def filter_traffic(self, text):
+        search_text = text.lower()
+        for row in range(self.table.rowCount()):
+            match = False
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item and search_text in item.text().lower():
+                    match = True
+                    break
+            self.table.setRowHidden(row, not match)
 
-        # 3. АВТООБНОВЛЕНИЕ СОЕДИНЕНИЙ (Каждую секунду)
-        self.refresh_connections_data()
+    def update_status(self, s):
+        if s == "OK":
+            self.status_dot.setText("● ONLINE");
+            self.status_dot.setStyleSheet("color: #10b981;")
+        else:
+            self.status_dot.setText("● OFFLINE");
+            self.status_dot.setStyleSheet("color: #ef4444;")
 
-    def refresh_connections_data(self):
-        # Сохраняем текущее положение прокрутки, чтобы таблица не прыгала
-        scroll_pos = self.conn_table.verticalScrollBar().value()
+    def update_stats(self, s):
+        self.cpu_bar.setValue(int(s['cpu']))
+        self.cpu_val.setText(f"{s['cpu']}%")
+        self.ram_bar.setValue(int(s['ram']))
+        self.ram_val.setText(f"{s['ram']}%")
+        self.disk_bar.setValue(int(s['disk']['percent']))
+        self.disk_val.setText(f"{s['disk']['percent']}%")
 
-        self.conn_table.setRowCount(0)
-        try:
-            for c in psutil.net_connections(kind='inet'):
-                r = self.conn_table.rowCount()
-                self.conn_table.insertRow(r)
-                l_addr = f"{c.laddr.ip}:{c.laddr.port}"
-                r_addr = f"{c.raddr.ip}:{c.raddr.port}" if c.raddr else "LISTEN"
-                self.conn_table.setItem(r, 0, QTableWidgetItem(l_addr))
-                self.conn_table.setItem(r, 1, QTableWidgetItem(r_addr))
-                self.conn_table.setItem(r, 2, QTableWidgetItem(c.status))
-                self.conn_table.setItem(r, 3, QTableWidgetItem(str(c.pid)))
-        except:
-            pass
+        fmt = lambda b: f"{b / 1024 / 1024:.2f} MB/s" if b > 1024 * 1024 else f"{b / 1024:.1f} KB/s"
+        self.sp_down.setText(f"⬇ {fmt(s['speed']['down'])}")
+        self.sp_up.setText(f"⬆ {fmt(s['speed']['up'])}")
+        self.total_net.setText(f"{s['net_total']['rx']} MB / {s['net_total']['tx']} MB")
 
-        self.conn_table.verticalScrollBar().setValue(scroll_pos)
+        i = s['sys_info']
+        self.sys_info.setText(f"🖥 <b>Host:</b> {i['node']}  |  <b>OS:</b> {i['os']}  |  <b>Uptime:</b> {i['uptime']}")
 
-    def add_row(self, data):
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        for i, val in enumerate(data):
-            self.table.setItem(row, i, QTableWidgetItem(val))
+    def update_packets(self, packets):
+        if self.traffic_paused: return
 
-        # УВЕЛИЧЕННЫЙ ЛИМИТ ДО 1000 ЗАПИСЕЙ
-        if row > 1000:
-            self.table.removeRow(0)
+        for p in packets:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            data = [p['src'], p['dst'], p['proto'], str(p['size']), p['time']]
+            for i, v in enumerate(data):
+                self.table.setItem(row, i, QTableWidgetItem(v))
 
-        # Автоматический скролл вниз только если мы и так внизу
+        if self.table.rowCount() > 100: self.table.removeRow(0)
         self.table.scrollToBottom()
 
-    def toggle_sniffer(self):
-        if not self.sniffer.isRunning():
-            self.sniffer.start()
-            self.btn_action.setText("ОСТАНОВИТЬ МОНИТОРИНГ")
-            self.btn_action.setObjectName("StopBtn")
-        else:
-            self.sniffer.stop()
-            self.btn_action.setText("ЗАПУСТИТЬ МОНИТОРИНГ")
-            self.btn_action.setObjectName("")
-        self.btn_action.setStyle(self.btn_action.style())
+        if self.traffic_search.text():
+            self.filter_traffic(self.traffic_search.text())
 
-    def filter_data(self):
-        q = self.search.text().lower()
-        for i in range(self.table.rowCount()):
-            self.table.setRowHidden(i, q not in self.table.item(i, 0).text().lower() and q not in self.table.item(i,
-                                                                                                                  1).text().lower())
+    def update_conns(self, conns):
+        self.conn_table.setRowCount(0)
+        for c in conns:
+            r = self.conn_table.rowCount()
+            self.conn_table.insertRow(r)
+            items = [c['local'], c['remote'], c['status'], str(c['pid'])]
+            for i, v in enumerate(items):
+                self.conn_table.setItem(r, i, QTableWidgetItem(v))
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    if not check_root():
-        QMessageBox.critical(None, "Sudo Required", "Запустите программу через: sudo ./venv/bin/python main.py")
-        sys.exit()
-    win = CyberGuard()
+    win = CyberGuardClient()
     win.show()
     sys.exit(app.exec())
