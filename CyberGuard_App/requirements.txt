@@ -5,4 +5,3 @@ psutil==5.9.8
 requests==2.33.1
 fastapi==0.136.1
 uvicorn==0.46.0
-

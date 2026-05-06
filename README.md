@@ -9,10 +9,12 @@
 
 
 
-chmod +x installer.sh
-./installer.sh
+chmod +x install_cyberguard.sh
+./install_cyberguard.sh
 
 <br><br>
+
+cd CyberGuard_App/
 
 ./run_client.sh
 
